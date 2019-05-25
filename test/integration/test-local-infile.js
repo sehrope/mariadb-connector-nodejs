@@ -128,6 +128,68 @@ describe('local-infile', () => {
       .catch(done);
   });
 
+  it('local infile handles read errors', function(done) {
+    const origFsCreateReadStream = fs.createReadStream;
+    fs.createReadStream = filename => {
+      if (filename === smallFileName) {
+        // Replace with attempting to open a non-existent file
+        const nonExistentFilename = 'NON_EXISTENT_FILE-' + Date.now();
+        return origFsCreateReadStream(nonExistentFilename);
+      }
+      return origFsCreateReadStream(filename);
+    };
+    after(function() {
+      fs.createReadStream = origFsCreateReadStream;
+    });
+    const self = this;
+    shareConn
+      .query('select @@local_infile')
+      .then(rows => {
+        if (rows[0]['@@local_infile'] === 0) {
+          self.skip();
+        }
+        return new Promise(function(resolve, reject) {
+          fs.writeFile(smallFileName, '1,hello\n2,world\n', 'utf8', function(
+            err
+          ) {
+            if (err) reject(err);
+            else resolve();
+          });
+        });
+      })
+      .then(() => {
+        base
+          .createConnection({ permitLocalInfile: true })
+          .then(conn => {
+            conn.query(
+              'CREATE TEMPORARY TABLE smallLocalInfile(id int, test varchar(100))'
+            );
+            conn
+              .query(
+                "LOAD DATA LOCAL INFILE '" +
+                  smallFileName.replace(/\\/g, '/') +
+                  "' INTO TABLE smallLocalInfile FIELDS TERMINATED BY ',' (id, test)"
+              )
+              .then(() => {
+                done(new Error('must have thrown error !'));
+              })
+              .catch(err => {
+                assert(
+                  err.message.includes(
+                    'LOCAL INFILE command failed: ENOENT: no such file or directory'
+                  )
+                );
+                assert.equal(err.sqlState, '22000');
+                assert(!err.fatal);
+                conn.end();
+                done();
+              });
+          })
+          .catch(done);
+      })
+      .catch(done);
+  });
+
   it('small local infile', function(done) {
     const self = this;
     shareConn
